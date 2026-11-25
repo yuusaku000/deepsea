@@ -1943,7 +1943,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   function setupVrView() {
     diver.visible = false;               // 自分なので、外から見た姿は出さない
     selfBody.visible = true;
-    maskFrame.visible = true;
+    maskFrame.visible = false;           // ゴーグルをつけているだけで十分なので、マスクのふちは出さない
     rig.position.set(0, HEAD_Y, 0);
   }
   function setupPcView() {

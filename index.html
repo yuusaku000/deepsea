@@ -179,7 +179,8 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   var REACH_R = 2.2;           // ここまで来たら、せめる側の勝ち
   var SPAWN_R = 30;            // CPUを置ける内側の線
   var GAME_TIME = 90;
-  var POINT_EVERY = 6;          // せめる側のポイントが1ふえるまでの秒数
+  var POINT_EVERY = 10;         // せめる側のポイントが1ふえるまでの秒数
+  var START_POINTS = 3;         // せめる側の、最初のポイント
   var SWEEP_PERIOD = 4;        // レーダーが1周する秒数
   var SHOT_SPEED = 55, SHOT_LIFE = 1.0, SHOT_COOLDOWN = 0.5;
   var BIG_SPEED = 40, BIG_LIFE = 1.5, BIG_COOLDOWN = 5, CHARGE_TIME = 0.9;   // ため撃ち
@@ -1141,7 +1142,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   var sim = null;
   function makeSim(withPlayer) {
     var s = {
-      ents: [], nextId: 1, time: GAME_TIME, phase: "lobby", winner: "", points: 6, pointT: 0,
+      ents: [], nextId: 1, time: GAME_TIME, phase: "lobby", winner: "", points: START_POINTS, pointT: 0,
       shots: [], events: [], sweep: 0, prevSweep: 0, shotCool: 0
     };
     if (withPlayer) s.ents.push(newEnt(s, "angler", 0, ARENA_R - 2));
@@ -1154,7 +1155,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   }
   function startSim() {
     ROCKS.forEach(function (k, i) { if (k.dead) { reviveRock(i); sim.events.push({ t: "revive", i: i }); } });
-    sim.phase = "play"; sim.time = GAME_TIME; sim.points = 6; sim.winner = "";
+    sim.phase = "play"; sim.time = GAME_TIME; sim.points = START_POINTS; sim.winner = "";
     sim.ents = sim.ents.filter(function (e) { return e.isPlayer; });
     sim.ents.forEach(function (e) { var a = rand(0, 6.28); e.x = Math.cos(a) * (ARENA_R - 2); e.z = Math.sin(a) * (ARENA_R - 2); e.state = "go"; e.respawn = 0; });
     sim.events.push({ t: "start" });

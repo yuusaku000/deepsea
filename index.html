@@ -105,6 +105,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     <button class="unit" data-kind="fish" aria-pressed="true">1 ハダカイワシ（1pt・速い）</button>
     <button class="unit" data-kind="jelly" aria-pressed="false">2 クラゲ（1pt・止まれない）</button>
     <button class="unit" data-kind="isopod" aria-pressed="false">3 グソクムシ（2pt・2回たえる）</button>
+    <button class="unit" data-kind="giant" aria-pressed="false">4 巨大魚（1pt・2回たえる）</button>
     <button class="unit" id="btnMap" aria-pressed="false">Tab 地図をひらく</button>
   </div>
   <div id="mapWrap" hidden>
@@ -141,7 +142,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     <div id="code">----</div>
     <p id="status">つなぐ準備をしています…</p>
     <button class="primary" id="btnStart" disabled>スタート</button>
-    <p class="small">操作：WASDで泳ぐ ・ マウスで向き（クリックで固定）・ Tabで地図をひらいてCPUを置く ・ 1/2/3でCPUの種類</p>
+    <p class="small">操作：WASDで泳ぐ ・ マウスで向き（クリックで固定）・ Tabで地図をひらいてCPUを置く ・ 1〜4でCPUの種類</p>
   </div>
 
   <div class="card" id="cardJoin" hidden>
@@ -188,11 +189,13 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   var NET_RATE = 1 / 15;
   var PREFIX = "yu-deepsea-";
   var KINDS = {
-    angler: { speed: 3.3, hp: 1, r: 1.3, y: 1.1, cost: 0 },
+    angler: { speed: 3.3, hp: 1, r: 1.1, y: 1.1, cost: 0 },
     fish:   { speed: 3.8, hp: 1, r: 0.9, y: 1.4, cost: 1 },
     jelly:  { speed: 1.25, hp: 1, r: 1.1, y: 2.2, cost: 1 },
-    isopod: { speed: 1.7, hp: 2, r: 1.0, y: 0.35, cost: 2 }
+    isopod: { speed: 1.7, hp: 2, r: 1.0, y: 0.35, cost: 2 },
+    giant:  { speed: 2.4, hp: 2, r: 1.5, y: 1.9, cost: 1 }
   };
+  var KIND_NAMES = { angler: "チョウチンアンコウ", fish: "ハダカイワシ", jelly: "クラゲ", isopod: "グソクムシ", giant: "巨大魚" };
 
   var canvas = document.getElementById("view");
   function $(id) { return document.getElementById(id); }
@@ -277,6 +280,10 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     ROCKS.push({ x: -17, z: 10, r: 2.4, h: 2.8, wreck: true, rot: -1.1 });
     ROCKS.push({ x: 30, z: 22, r: 2.8, h: 3.4, wreck: true, rot: 2.0 });
     ROCKS.push({ x: -26, z: -30, r: 2.6, h: 3.0, wreck: true, rot: 0.2 });
+    // ダイバーのまわりの見通しをよくする：まんなかにいちばん近い岩を3つのぞく
+    var near = ROCKS.map(function (k, i) { return { i: i, d: Math.hypot(k.x, k.z), leg: !!k.archLeg }; })
+      .filter(function (o) { return !o.leg; }).sort(function (a, b) { return a.d - b.d; }).slice(0, 3).map(function (o) { return o.i; });
+    ROCKS = ROCKS.filter(function (k, i) { return near.indexOf(i) < 0; });
     ROCKS.forEach(function (k) { k.base = terrainH(k.x, k.z); });
   })();
   // 線分が岩でふさがれているか（2Dで、高さも見る）
@@ -373,6 +380,22 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 
   // ===== 岩 =====
   var rockMat = new THREE.MeshLambertMaterial({ color: 0x4a5258, flatShading: true });
+  // 岩をでこぼこにする。面ごとに頂点が分かれているので、同じ場所の頂点には同じ値を使い、すき間（透けて見える穴）を作らない
+  function bumpy(geo, lo, span, salt) {
+    var p = geo.attributes.position, memo = {};
+    for (var i = 0; i < p.count; i++) {
+      var x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      var key = Math.round(x * 1000) + "," + Math.round(y * 1000) + "," + Math.round(z * 1000);
+      if (memo[key] === undefined) {
+        var h = Math.sin(Math.round(x * 1000) * 0.0129898 + Math.round(y * 1000) * 0.078233 + Math.round(z * 1000) * 0.037719 + salt * 17.13) * 43758.5453;
+        memo[key] = lo + (h - Math.floor(h)) * span;
+      }
+      var f = memo[key];
+      p.setXYZ(i, x * f, y * f, z * f);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
   var wreckMat = new THREE.MeshLambertMaterial({ color: 0x5a4434, flatShading: true });
   var rustMat = new THREE.MeshLambertMaterial({ color: 0x7a4a2c, flatShading: true });
   ROCKS.forEach(function (k) {
@@ -388,13 +411,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
       scene.add(g); k.mesh = g;
       return;
     }
-    var geo = new THREE.DodecahedronGeometry(1, 1);
-    var p = geo.attributes.position;
-    for (var i = 0; i < p.count; i++) {
-      var f = 0.78 + srnd() * 0.42;
-      p.setXYZ(i, p.getX(i) * f, p.getY(i) * f, p.getZ(i) * f);
-    }
-    geo.computeVertexNormals();
+    var geo = bumpy(new THREE.DodecahedronGeometry(1, 1), 0.78, 0.42, srnd() * 100);
     var m = new THREE.Mesh(geo, rockMat);
     m.scale.set(k.r, k.h * 0.6, k.r * (0.85 + srnd() * 0.3));
     m.position.set(k.x, k.base + k.h * 0.35, k.z);
@@ -459,10 +476,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 
   // ===== マップの端：ぐるっと囲む岩の壁（谷の底にいる感じ） =====
   (function () {
-    var wallGeo = new THREE.DodecahedronGeometry(1, 1);
-    var p2 = wallGeo.attributes.position;
-    for (var i = 0; i < p2.count; i++) { var f = 0.8 + srnd() * 0.35; p2.setXYZ(i, p2.getX(i) * f, p2.getY(i) * f, p2.getZ(i) * f); }
-    wallGeo.computeVertexNormals();
+    var wallGeo = bumpy(new THREE.DodecahedronGeometry(1, 1), 0.8, 0.35, srnd() * 100);
     var N = 46;
     var wall = new THREE.InstancedMesh(wallGeo, new THREE.MeshLambertMaterial({ color: 0x3a4248, flatShading: true }), N * 2);
     var m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), e4 = new THREE.Euler(), sc = new THREE.Vector3(), ps = new THREE.Vector3();
@@ -719,7 +733,9 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     // 1) つかまえた敵が、目の前にぬっと迫る
     var v = views[horrorBy];
     if (v && t < 2.4) {
-      var dist = Math.max(0.95, 2.4 - t * 2.0);
+      var bigOne = v.kind === "giant";
+      var dist = bigOne ? Math.max(2.5, 5 - t * 2.4) : Math.max(0.95, 2.4 - t * 2.0);
+      if (bigOne) v.obj.userData.jaw.rotation.x = -0.75;
       v.obj.visible = true;
       v.obj.position.set(cam.x + fw.x * dist, cam.y + fw.y * dist - 0.15, cam.z + fw.z * dist);
       v.obj.lookAt(cam.x, cam.y - 0.15, cam.z);
@@ -749,10 +765,11 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     deathFade.material.opacity = t < 1.6 ? 0 : Math.min(0.97, (t - 1.6) / 3.2);
     hemi.intensity = Math.max(0.05, 0.6 - t * 0.12);
     // 6) 静かになってから、文字
-    if (t > 5.6 && !horrorShown) {
+    if (t > 4.4 && !horrorShown) {
       horrorShown = true;
-      showEnd("負け…", "#8a1a14", horrorSub);
+      showEnd("死んでしまった…", "#ff4a3a", horrorSub, true);
     }
+    if (horrorShown) endMesh.material.opacity = Math.min(1, (t - 4.4) / 1.2);
   }
 
   // ===== レーダーの回る線（海の底に、うっすら） =====
@@ -859,7 +876,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     var lure = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshBasicMaterial({ color: 0x9fffe0 })); lure.position.set(0, 1.42, -0.85); g.add(lure);
     var lg = glow(0x9fffe0, 1.2, 0.9); lg.position.copy(lure.position); g.add(lg);
     g.userData.tail = tail; g.userData.lureGlow = lg;
-    g.scale.setScalar(1.15);
+    g.scale.setScalar(0.95);
     return g;
   }
   // キバウオ：牙だらけで、背中にとげ
@@ -930,7 +947,89 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     g.scale.setScalar(1.15);
     return g;
   }
-  var MAKERS = { angler: makeAngler, fish: makeFish, jelly: makeJelly, isopod: makeIsopod };
+  // 巨大魚：大きくさけた口に長い牙。にごった白い目が赤く光り、体の横に青白い光の点。あごの下から光るひげ
+  function makeGiant() {
+    var g = new THREE.Group();
+    var skin = new THREE.MeshPhongMaterial({ color: 0x18171b, shininess: 25, specular: 0x1c181e, flatShading: true });
+    var belly = new THREE.MeshPhongMaterial({ color: 0x35292a, shininess: 25, flatShading: true });
+    var finMat = new THREE.MeshPhongMaterial({ color: 0x2a1c24, shininess: 20, transparent: true, opacity: 0.85, side: THREE.DoubleSide, flatShading: true });
+    var toothMat = new THREE.MeshPhongMaterial({ color: 0xe8e0cc, shininess: 90, specular: 0xffffff });
+    // 胴（前が太く、うしろへ細い）
+    var body = new THREE.Mesh(new THREE.SphereGeometry(0.8, 14, 10), skin); body.scale.set(0.95, 1.0, 1.9); body.position.z = 0.25; g.add(body);
+    var under = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 8), belly); under.scale.set(0.85, 0.65, 1.7); under.position.set(0, -0.28, 0.3); g.add(under);
+    // 上あご（頭）
+    var head = new THREE.Mesh(new THREE.SphereGeometry(0.78, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), skin);
+    head.scale.set(1.0, 0.85, 1.25); head.position.set(0, 0, -0.95); g.add(head);
+    // 下あご（ゆっくり開いたり閉じたりする）
+    var jaw = new THREE.Group(); jaw.position.set(0, 0, -0.35); g.add(jaw);
+    var jawM = new THREE.Mesh(new THREE.SphereGeometry(0.74, 14, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), belly);
+    jawM.scale.set(0.95, 0.6, 1.3); jawM.position.z = -0.62; jaw.add(jawM);
+    // 口の中：赤黒く、奥がぼんやり赤く光る
+    var throat = new THREE.Mesh(new THREE.CircleGeometry(0.62, 18), new THREE.MeshBasicMaterial({ color: 0x2a0303, side: THREE.DoubleSide }));
+    throat.position.set(0, -0.12, -1.25); throat.scale.set(1, 0.6, 1); g.add(throat);
+    var tg = glow(0xff2010, 1.0, 0.45); tg.position.set(0, -0.12, -1.15); g.add(tg);
+    // 牙：口のふちにそって、長いのと短いのをまぜる
+    function fangRow(parent, n, rx, rz, y, zc, len, up) {
+      for (var i = 0; i < n; i++) {
+        var a = -1.25 + 2.5 * i / (n - 1);
+        var L = len * (i % 2 ? 0.55 : 1) * (1 - Math.abs(a) * 0.25);
+        var f = new THREE.Mesh(new THREE.ConeGeometry(L * 0.13, L, 5), toothMat);
+        f.position.set(Math.sin(a) * rx, y + (up ? L * 0.45 : -L * 0.45), zc - Math.cos(a) * rz);
+        f.rotation.x = up ? -0.25 : Math.PI + 0.25;
+        parent.add(f);
+      }
+    }
+    fangRow(g, 13, 0.72, 0.9, 0.0, -0.95, 0.55, false);
+    fangRow(jaw, 11, 0.66, 0.88, 0.0, -0.62, 0.5, true);
+    // 目：にごった小さな目玉に、赤く細い瞳。上に、怒ったような骨の出っぱり
+    [-1, 1].forEach(function (sg) {
+      var eye = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), new THREE.MeshPhongMaterial({ color: 0x8a7e66, shininess: 120, specular: 0x998877 }));
+      eye.position.set(sg * 0.6, 0.3, -1.32); g.add(eye);
+      var pup = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff2010 }));
+      pup.scale.set(0.6, 1.6, 0.6); pup.position.set(sg * 0.66, 0.3, -1.39); g.add(pup);
+      var eg = glow(0xff2a10, 0.55, 0.85); eg.position.set(sg * 0.68, 0.3, -1.42); g.add(eg);
+      var brow = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.09, 0.26), skin);
+      brow.position.set(sg * 0.55, 0.43, -1.3); brow.rotation.z = sg * 0.4; brow.rotation.y = -sg * 0.3; g.add(brow);
+    });
+    // 体の横の、青白い光の点
+    for (var k = 0; k < 9; k++) {
+      var zz = -0.55 + k * 0.28, q = (zz - 0.25) / 1.52, xr = 0.76 * Math.sqrt(Math.max(0, 1 - q * q)) + 0.04;
+      [-1, 1].forEach(function (sg) { var ph = glow(0x8ad8ff, 0.2, 0.9); ph.position.set(sg * xr, -0.3, zz); g.add(ph); });
+    }
+    // 古い傷あと
+    var scarMat = new THREE.MeshPhongMaterial({ color: 0x8a7a72, flatShading: true });
+    [[0.74, 0.25, 0.1, 0.5], [-0.72, 0.1, 0.7, -0.4], [0.6, 0.45, 1.1, 0.3]].forEach(function (c) {
+      var sc = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.55), scarMat);
+      sc.position.set(c[0], c[1], c[2]); sc.rotation.x = c[3]; sc.rotation.y = c[0] > 0 ? 0.2 : -0.2; g.add(sc);
+    });
+    // 背中のとげと、ぼろぼろのひれ
+    for (var d = 0; d < 6; d++) {
+      var sp = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.55 - d * 0.05, 4), skin);
+      sp.position.set(0, 0.85 - d * 0.04, -0.55 + d * 0.32); sp.rotation.x = 0.45; g.add(sp);
+    }
+    function finShape(pts) {
+      var sh = new THREE.Shape(); sh.moveTo(pts[0][0], pts[0][1]);
+      for (var i = 1; i < pts.length; i++) sh.lineTo(pts[i][0], pts[i][1]);
+      return new THREE.ShapeGeometry(sh);
+    }
+    [-1, 1].forEach(function (sg) {
+      var pf = new THREE.Mesh(finShape([[0, 0], [0.9, -0.15], [0.7, 0.05], [0.95, 0.25], [0.55, 0.2], [0.6, 0.4]]), finMat);
+      pf.position.set(sg * 0.72, -0.25, -0.35); pf.rotation.set(-Math.PI / 2 + 0.3, 0, sg > 0 ? -0.4 : Math.PI + 0.4); g.add(pf);
+    });
+    // 尾びれ（ふたまた、ふちがぎざぎざ）
+    var tail = new THREE.Group(); tail.position.set(0, 0, 1.95); g.add(tail);
+    var tf = new THREE.Mesh(finShape([[0, 0], [0.95, 0.9], [0.75, 0.45], [1.0, 0.35], [0.6, 0], [1.0, -0.35], [0.75, -0.45], [0.95, -0.9]]), finMat);
+    tf.rotation.y = -Math.PI / 2; tail.add(tf);
+    // あごの下の、光るひげ
+    var barbel = new THREE.Group(); barbel.position.set(0, -0.35, -1.25); jaw.add(barbel);
+    barbel.position.set(0, -0.3, -1.1);
+    var bl = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.02, 1.1, 5), skin); bl.position.y = -0.55; barbel.add(bl);
+    var bt = glow(0xff4060, 0.45, 0.95); bt.position.y = -1.12; barbel.add(bt);
+    var btc = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff6080 })); btc.position.y = -1.12; barbel.add(btc);
+    g.userData.tail = tail; g.userData.jaw = jaw; g.userData.barbel = barbel;
+    return g;
+  }
+  var MAKERS = { angler: makeAngler, fish: makeFish, jelly: makeJelly, isopod: makeIsopod, giant: makeGiant };
 
   // 画面に出ている生き物（id → 見た目）
   var views = {};
@@ -1155,10 +1254,15 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   }
   function startSim() {
     ROCKS.forEach(function (k, i) { if (k.dead) { reviveRock(i); sim.events.push({ t: "revive", i: i }); } });
-    sim.phase = "play"; sim.time = GAME_TIME; sim.points = START_POINTS; sim.winner = "";
+    sim.phase = "play"; sim.time = GAME_TIME; sim.points = START_POINTS; sim.winner = ""; sim.shots = []; sim.pointT = 0;
     sim.ents = sim.ents.filter(function (e) { return e.isPlayer; });
     sim.ents.forEach(function (e) { var a = rand(0, 6.28); e.x = Math.cos(a) * (ARENA_R - 2); e.z = Math.sin(a) * (ARENA_R - 2); e.state = "go"; e.respawn = 0; });
     sim.events.push({ t: "start" });
+  }
+  // もう一度：岩も、CPUも、守る側のCPUの覚えたことも、最初にもどす
+  function restartRound() {
+    ai.memory = null; ai.cool = 1.5; ai.bigCool = 6; ai.react = 0; directorT = 0;
+    startSim(); hideEnd();
   }
   function placeCpu(kind, x, z) {
     if (!sim || sim.phase !== "play") return false;
@@ -1370,7 +1474,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     directorT -= dt;
     if (directorT > 0) return;
     directorT = rand(1.5, 3.2) * (sim.time > 45 ? 1 : 0.7);
-    var kinds = ["fish", "fish", "fish", "jelly", "isopod"];
+    var kinds = ["fish", "fish", "fish", "jelly", "isopod", "giant"];
     var kind = kinds[Math.floor(Math.random() * kinds.length)];
     var a = rand(0, 6.28), d = rand(SPAWN_R + 2, ARENA_R - 1);
     sim.points = 99;
@@ -1388,7 +1492,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
   function sendState() {
     if (!conn || !conn.open) return;
     var ents = sim.ents.map(function (e) { return [e.id, e.kind, +e.x.toFixed(2), +e.y.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(2), e.state === "go" ? 0 : (e.state === "flee" ? 1 : 2)]; });
-    conn.send({ t: "s", ents: ents, time: +sim.time.toFixed(2), phase: sim.phase, winner: sim.winner, sweep: +sim.sweep.toFixed(3), ev: sim.events.slice(0, 40) });
+    conn.send({ t: "s", ents: ents, time: +sim.time.toFixed(2), phase: sim.phase, winner: sim.winner, sweep: +sim.sweep.toFixed(3), ev: sim.events });
   }
   function hostSetup() {
     var code = String(Math.floor(1000 + Math.random() * 9000));
@@ -1401,7 +1505,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
       c.on("data", function (d) {
         if (!d || !d.t) return;
         if (d.t === "head") { headQ.set(d.q[0], d.q[1], d.q[2], d.q[3]); if (d.g) gunQ.set(d.g[0], d.g[1], d.g[2], d.g[3]); boostT = d.b || 0; }
-        else if (d.t === "restart" && sim && sim.phase === "end") { startSim(); hideEnd(); }
+        else if (d.t === "restart" && sim && sim.phase === "end") restartRound();
         else if (d.t === "shot" && sim && sim.phase === "play") { simShoot({ x: d.o[0], y: d.o[1], z: d.o[2] }, { x: d.d[0], y: d.d[1], z: d.d[2] }, d.big); addPulseVisual(new THREE.Vector3(d.o[0], d.o[1], d.o[2]), new THREE.Vector3(d.d[0], d.d[1], d.d[2]), d.big); if (d.big) playBigShot(); else playShot(); }
       });
       c.on("close", function () { $("status").textContent = "VRの人との接続が切れました"; $("status").className = "bad"; });
@@ -1454,6 +1558,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     } else if (ev.t === "rock") {
       breakRockVisual(ev.i);
     } else if (ev.t === "start") {
+      ROCKS.forEach(function (k, i) { if (k.dead) reviveRock(i); });   // VRの側でも、こわれた岩を必ずもどす
       hideEnd();
       rescueT = -1; lampOffT = -1; lampK = 1; rescue.material.opacity = 0; rescue.position.y = 60; hemi.intensity = 0.6;
       horrorT = -1; deathFade.material.opacity = 0; horrorLight.intensity = 0; diverDownT = -1; diver.rotation.x = 0; rig.position.x = 0; rig.position.z = 0;
@@ -1465,6 +1570,9 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
       else sub = (ev.winner === "vr" ? "救助が来てしまった" : "ダイバーをつかまえた") + " ・ Enter でもう一度";
       if (vrSide) sub += " ・ 引き金を長押しでもう一度";
       if (vrSide && ev.winner === "pc") {
+        var kv = views[ev.by], kname = kv && KIND_NAMES[kv.kind] ? KIND_NAMES[kv.kind] : "深海の生き物";
+        sub = kname + "につかまった\n" + (role === "solo" ? "引き金を長押しで、もう一度"
+          : "もう一度はパソコンから（Enterキー）\n引き金の長押しでも始められます");
         startHorror(ev.by, sub);          // 文字は、暗くなってから出す
       } else {
         showEnd(won ? "勝ち！" : "負け…", won ? "#46f0b4" : "#ff5a4e", sub);
@@ -1507,6 +1615,11 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
         var pulse = 1 + Math.sin(v.t * 2.2) * 0.12;
         o.userData.bell.scale.set(pulse, 1 / pulse, pulse);
         o.userData.tents.forEach(function (tl, ti) { tl.rotation.z = Math.sin(v.t * 1.5 + ti) * 0.25; tl.rotation.x = Math.cos(v.t * 1.2 + ti) * 0.2; });
+      }
+      if (kind === "giant") {
+        o.userData.tail.rotation.y = Math.sin(v.t * (2.0 + spd * 0.8)) * 0.45;
+        o.userData.jaw.rotation.x = -0.15 - Math.max(0, Math.sin(v.t * 0.9)) * 0.4;
+        o.userData.barbel.rotation.x = Math.sin(v.t * 1.3) * 0.25;
       }
       if (kind === "isopod") o.userData.legs.forEach(function (l, li) { l.rotation.z = Math.sin(v.t * 10 + li) * 0.3 * Math.min(1, spd); });
       if (st === 1) { o.rotation.z += dt * 8; o.scale.setScalar(Math.max(0.3, o.scale.x - dt * 0.5)); }
@@ -1650,7 +1763,8 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     if (e.code === "Digit1") selectKind("fish");
     if (e.code === "Digit2") selectKind("jelly");
     if (e.code === "Digit3") selectKind("isopod");
-    if (e.code === "Enter" && sim && sim.phase === "end") { ROCKS.forEach(function (k, i) { if (k.dead) reviveRock(i); }); ai.memory = null; ai.bigCool = 6; startSim(); hideEnd(); }
+    if (e.code === "Digit4") selectKind("giant");
+    if (e.code === "Enter" && sim && sim.phase === "end") restartRound();
   });
   window.addEventListener("keyup", function (e) { keys[e.code] = false; });
   function selectKind(k) {
@@ -1707,8 +1821,8 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     // 自分とCPU
     if (sim) sim.ents.forEach(function (e) {
       if (e.state === "dead" || e.state === "gone") return;
-      g.fillStyle = e.isPlayer ? "#9fffe0" : (e.kind === "jelly" ? "#c86aff" : (e.kind === "isopod" ? "#a89ab8" : "#7fa3a6"));
-      g.beginPath(); g.arc(W / 2 + e.x * S, W / 2 + e.z * S, e.isPlayer ? 8 : 5, 0, 6.3); g.fill();
+      g.fillStyle = e.isPlayer ? "#9fffe0" : (e.kind === "jelly" ? "#c86aff" : (e.kind === "isopod" ? "#a89ab8" : (e.kind === "giant" ? "#e0704a" : "#7fa3a6")));
+      g.beginPath(); g.arc(W / 2 + e.x * S, W / 2 + e.z * S, e.isPlayer ? 8 : (e.kind === "giant" ? 8 : 5), 0, 6.3); g.fill();
     });
   }
 
@@ -1759,30 +1873,48 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     g.fillText(bigCool > 0 ? "ため撃ち " + Math.ceil(bigCool) + "秒" : "ため撃ち OK", 256, 230);
     infoTex.needsUpdate = true;
   }
-  function showEnd(text, color, sub) {
+  function showEnd(text, color, sub, dark) {
     var el = $("endMsg");
     el.innerHTML = ""; var a = document.createElement("div"); a.textContent = text; el.appendChild(a);
-    if (sub) { var b = document.createElement("div"); b.style.fontSize = "1.1rem"; b.style.fontFamily = "var(--font-body)"; b.textContent = sub; el.appendChild(b); }
+    if (sub) { var b = document.createElement("div"); b.style.fontSize = "1.1rem"; b.style.fontFamily = "var(--font-body)"; b.style.whiteSpace = "pre-line"; b.style.color = "#d8f3ee"; b.textContent = sub; el.appendChild(b); }
     el.style.color = color; el.hidden = false;
-    endText.text = text; endText.sub = sub || ""; endText.color = color; drawEndTex();
+    endText.text = text; endText.sub = sub || ""; endText.color = color; endText.dark = !!dark;
+    endMesh.material.opacity = 1;
+    drawEndTex();
   }
   function hideEnd() { $("endMsg").hidden = true; endMesh.visible = false; }
   // VRの中でも、勝ち負けを大きく出す
-  var endCanvas = document.createElement("canvas"); endCanvas.width = 1024; endCanvas.height = 256;
+  var END_H = 400;
+  var endCanvas = document.createElement("canvas"); endCanvas.width = 1024; endCanvas.height = END_H;
   var endTex = new THREE.CanvasTexture(endCanvas);
-  var endMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), new THREE.MeshBasicMaterial({ map: endTex, transparent: true, depthTest: false, fog: false }));
-  endMesh.renderOrder = 999; endMesh.visible = false; scene.add(endMesh);
-  var endText = { text: "", sub: "", color: "#fff" };
+  var endMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4 * END_H / 1024), new THREE.MeshBasicMaterial({ map: endTex, transparent: true, depthTest: false, depthWrite: false, fog: false }));
+  endMesh.renderOrder = 1002; endMesh.visible = false; scene.add(endMesh);   // 真っ暗にする幕（1001）より手前に出す
+  var endText = { text: "", sub: "", color: "#fff", dark: false };
+  // 終わりの文字の形を、先に読みこんでおく（読みこむ前に描くと、ちがう形の字になるため）
+  if (document.fonts && document.fonts.load) {
+    document.fonts.load("116px 'Dela Gothic One'", "死んでしまった…勝ち！負け接続が切れました").then(function () { if (endText.text) drawEndTex(); }).catch(function () {});
+  }
   function drawEndTex() {
-    var g = endCanvas.getContext("2d"); g.clearRect(0, 0, 1024, 256); g.textAlign = "center";
-    g.font = "120px 'Dela Gothic One', sans-serif"; g.lineWidth = 12; g.strokeStyle = "rgba(0,0,0,0.8)"; g.strokeText(endText.text, 512, 140);
+    var g = endCanvas.getContext("2d"); g.clearRect(0, 0, 1024, END_H); g.textAlign = "center";
+    if (endText.dark) {
+      var gr = g.createRadialGradient(512, 200, 30, 512, 200, 520);
+      gr.addColorStop(0, "rgba(60,0,0,0.7)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = gr; g.fillRect(0, 0, 1024, END_H);
+    }
+    g.font = "116px 'Dela Gothic One', sans-serif"; g.lineWidth = 12; g.strokeStyle = "rgba(0,0,0,0.8)"; g.strokeText(endText.text, 512, 140);
     g.fillStyle = endText.color; g.fillText(endText.text, 512, 140);
-    g.font = "bold 44px 'Zen Kaku Gothic New', sans-serif"; g.lineWidth = 8; g.strokeText(endText.sub, 512, 220); g.fillStyle = "#d8f3ee"; g.fillText(endText.sub, 512, 220);
+    var lines = endText.sub ? endText.sub.split("\n") : [];
+    lines.forEach(function (ln, i) {
+      var fs = 44; g.font = "bold " + fs + "px 'Zen Kaku Gothic New', sans-serif";
+      while (g.measureText(ln).width > 980 && fs > 26) { fs -= 2; g.font = "bold " + fs + "px 'Zen Kaku Gothic New', sans-serif"; }
+      g.lineWidth = 8; g.strokeStyle = "rgba(0,0,0,0.8)"; g.strokeText(ln, 512, 222 + i * 54);
+      g.fillStyle = i === 0 ? "#d8f3ee" : "#9ad8c4"; g.fillText(ln, 512, 222 + i * 54);
+    });
     endTex.needsUpdate = true;
     if (role === "vr" || role === "solo") {
       lastBar = -1;
       var dir = new THREE.Vector3(0, 0, -1).applyQuaternion(headQ); dir.y = 0; dir.normalize();
-      endMesh.position.set(dir.x * 3, HEAD_Y + 0.4, dir.z * 3); endMesh.lookAt(0, HEAD_Y + 0.4, 0);
+      endMesh.position.set(dir.x * 3, HEAD_Y + 0.2, dir.z * 3); endMesh.lookAt(0, HEAD_Y + 0.2, 0);
       endMesh.visible = true;
     }
   }
@@ -1798,8 +1930,8 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
     if (q === lastBar) return; lastBar = q;
     drawEndTex();
     var g = endCanvas.getContext("2d");
-    g.fillStyle = "rgba(255,255,255,0.15)"; g.fillRect(312, 238, 400, 12);
-    g.fillStyle = "#46f0b4"; g.fillRect(312, 238, 400 * k, 12);
+    g.fillStyle = "rgba(255,255,255,0.15)"; g.fillRect(312, END_H - 24, 400, 12);
+    g.fillStyle = "#46f0b4"; g.fillRect(312, END_H - 24, 400 * k, 12);
     endTex.needsUpdate = true;
     if (!renderer.xr.isPresenting) { $("flatHint").hidden = false; $("flatHint").textContent = k > 0 ? "そのまま押しつづけて… " + Math.round(k * 100) + "%" : "マウスを長押しでもう一度"; }
   }
@@ -1839,7 +1971,7 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
         if (restartHold > 1.3) {
           restartHold = 0; charging = false; chargeT = 0;
           tone(660, 0.15, 0.12, "triangle"); tone(990, 0.2, 0.1, "triangle", 0.1);
-          if (role === "solo") { startSim(); hideEnd(); }
+          if (role === "solo") restartRound();
           else if (conn && conn.open) conn.send({ t: "restart" });
         }
       } else restartHold = 0;
@@ -1945,6 +2077,16 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
       lampK = lampOffT < 1.6 ? (Math.random() < 0.5 ? 0.15 : 1) : Math.max(0, 1 - (lampOffT - 1.6));
     }
     updateHorror(dt);
+    // VRの中の終わりの文字は、頭の向きにゆっくりついてくる（顔をそむけても読める）
+    if (endMesh.visible && vrSide) {
+      var fd = new THREE.Vector3(0, 0, -1).applyQuaternion(headQ); fd.y = 0;
+      if (fd.lengthSq() > 1e-4) {
+        fd.normalize();
+        var curA = Math.atan2(endMesh.position.x, endMesh.position.z), wantA = Math.atan2(fd.x, fd.z);
+        var na = curA + angDiff(wantA, curA) * Math.min(1, dt * 2.5);
+        endMesh.position.set(Math.sin(na) * 3, HEAD_Y + 0.2, Math.cos(na) * 3); endMesh.lookAt(0, HEAD_Y + 0.2, 0);
+      }
+    }
     // パソコン側：つかまえたダイバーが、ゆっくり倒れて沈む
     if (diverDownT >= 0) {
       diverDownT += dt;
